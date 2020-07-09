@@ -76,6 +76,19 @@ endif()
 if(NOT THREADS_FOUND)
     message(FATAL_ERROR "pthreads(-win32) required to compile rtl-sdr")
 endif()
+# Find codec2
+if(CODEC2_BUILD_DIR)
+    find_package(codec2 REQUIRED
+        PATHS ${CODEC2_BUILD_DIR}
+        NO_DEFAULT_PATH
+        CONFIGS codec2.cmake
+    )
+    if(codec2_FOUND)
+        message(STATUS "Codec2 library found in build tree.")
+    endif()
+else()
+    find_package(codec2 REQUIRED)
+endif()
 ########################################################################
 # Setup the include and linker paths
 ########################################################################
