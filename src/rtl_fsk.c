@@ -1,5 +1,7 @@
 /*
- * rtl-sdr, turns your Realtek RTL2832 based DVB dongle into a SDR receiver
+ * rtl_fsk, turns your Realtek RTL2832 based DVB dongle into a FSK receiver
+ * 
+ * Based on rtl_sdr
  * Copyright (C) 2012 by Steve Markgraf <steve@steve-m.de>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -265,7 +267,9 @@ int main(int argc, char **argv)
 			goto out;
 		}
 	}
+        
         {
+            /* TODO: make some of these command line options */
             int Fs = DEFAULT_SAMPLE_RATE;
             int Rs = 10000;
             int M  = 2;
@@ -273,6 +277,8 @@ int main(int argc, char **argv)
             fsk = fsk_create_hbr(Fs,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
         }
         {
+            /* TODO: fsk_lower might need some adjustment, so we avoid the RTLSDR DC line.  We really need a GUI
+               plot of the spectrum and tone estimates to observe what's going on */
             int fsk_lower = 0;
             int fsk_upper = DEFAULT_SAMPLE_RATE/2;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);

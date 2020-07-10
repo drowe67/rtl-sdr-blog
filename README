@@ -1,5 +1,6 @@
-rtl-sdr
-turns your Realtek RTL2832 based DVB dongle into a SDR receiver
+rtl-fsk
+Turns your Realtek RTL2832 based DVB dongle into a FSK receiver
+Modified version of rtl-sdr-blog
 ======================================================================
 
 For more information see:
