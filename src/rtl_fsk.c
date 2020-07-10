@@ -16,6 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <assert.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -35,7 +36,7 @@
 #include "convenience/convenience.h"
 #include "fsk.h"
 
-#define DEFAULT_SAMPLE_RATE		2048000
+#define DEFAULT_SAMPLE_RATE		240000
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
@@ -43,20 +44,24 @@
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
 static rtlsdr_dev_t *dev = NULL;
+static struct FSK *fsk;
+static uint32_t out_block_size = DEFAULT_BUF_LENGTH;
+static unsigned char *rawbuf;
+static size_t nrawbuf = 0;
 
 void usage(void)
 {
 	fprintf(stderr,
 		"rtl_fsk, a FSK demodulator for RTL2832 based DVB-T receivers\n\n"
 		"Usage:\t -f frequency_to_tune_to [Hz]\n"
-		"\t[-s samplerate (default: 2048000 Hz)]\n"
+		"\t[-s samplerate (default: %d Hz)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g gain (default: 0 for auto)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
-		"\tfilename (a '-' dumps samples to stdout)\n\n");
+		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE);
 	exit(1);
 }
 
@@ -83,6 +88,10 @@ static void sighandler(int signum)
 
 static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
+        unsigned char *pout;
+        unsigned int   i;
+        unsigned char  bitbuf[fsk->Nbits];
+        
 	if (ctx) {
 		if (do_exit)
 			return;
@@ -93,11 +102,39 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			rtlsdr_cancel_async(dev);
 		}
 
+                /*
 		if (fwrite(buf, 1, len, (FILE*)ctx) != len) {
 			fprintf(stderr, "Short write, samples lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
 		}
+                */
 
+                /* append to existing samples in rawbuf */
+                memcpy(&rawbuf[nrawbuf],buf,len);
+                nrawbuf += len;
+                assert(nrawbuf < 2*out_block_size);
+
+                /* process as many samples in rawbuf as possible */
+                pout = rawbuf;
+                while(nrawbuf >= 2*fsk_nin(fsk)) {
+                    COMP modbuf[fsk->N+fsk->Ts*2];  /* max nin value with timing slips */
+                    /* complex unsigned 8 bit to float conversion */
+                    for(i=0;i<fsk_nin(fsk);i++){
+                        modbuf[i].real = ((float)pout[2*i]-127.0)/128.0;
+                        modbuf[i].imag = ((float)pout[2*i+1]-127.0)/128.0;
+                    }
+                    pout += 2*fsk_nin(fsk);
+                    nrawbuf -= 2*fsk_nin(fsk);
+                    fsk_demod(fsk, bitbuf, modbuf);
+                    if (fwrite(bitbuf, 1, fsk->Nbits, (FILE*)ctx) != (unsigned int)fsk->Nbits) {
+			fprintf(stderr, "Short write, bits lost, exiting!\n");
+			rtlsdr_cancel_async(dev);
+                    }
+                }
+
+                /* copy left over to start of buffer */
+                memmove(rawbuf,pout,nrawbuf);
+                
 		if (bytes_to_read > 0)
 			bytes_to_read -= len;
 	}
@@ -120,7 +157,6 @@ int main(int argc, char **argv)
 	int dev_given = 0;
 	uint32_t frequency = 100000000;
 	uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
-	uint32_t out_block_size = DEFAULT_BUF_LENGTH;
 
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S")) != -1) {
 		switch (opt) {
@@ -173,7 +209,9 @@ int main(int argc, char **argv)
 	}
 
 	buffer = malloc(out_block_size * sizeof(uint8_t));
-
+	rawbuf = malloc(2 * out_block_size * sizeof(uint8_t));
+        nrawbuf = 0;
+        
 	if (!dev_given) {
 		dev_index = verbose_device_search("0");
 	}
@@ -227,8 +265,20 @@ int main(int argc, char **argv)
 			goto out;
 		}
 	}
-
-	/* Reset endpoint before we start reading from it (mandatory) */
+        {
+            int Fs = DEFAULT_SAMPLE_RATE;
+            int Rs = 10000;
+            int M  = 2;
+            int P  = Fs/Rs;
+            fsk = fsk_create_hbr(Fs,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
+        }
+        {
+            int fsk_lower = 0;
+            int fsk_upper = DEFAULT_SAMPLE_RATE/2;
+            fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
+            fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
+        }
+        /* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dev);
 
 	if (sync_mode) {
@@ -273,7 +323,9 @@ int main(int argc, char **argv)
 		fclose(file);
 
 	rtlsdr_close(dev);
+        fsk_destroy(fsk);
 	free (buffer);
+	free (rawbuf);
 out:
 	return r >= 0 ? r : -r;
 }
