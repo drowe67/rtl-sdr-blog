@@ -24,6 +24,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h> 
+
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -213,6 +217,52 @@ int main(int argc, char **argv)
 	buffer = malloc(out_block_size * sizeof(uint8_t));
 	rawbuf = malloc(2 * out_block_size * sizeof(uint8_t));
         nrawbuf = 0;
+
+        /* create UDP socket for debug/status information */
+        {
+            int sockfd;
+            char hostname[]="localhost";
+            int portno = 8001;
+            struct sockaddr_in serveraddr;
+            struct hostent *server;
+            int serverlen;
+            char buf[256];
+            int n;
+            
+            /* socket: create the socket */
+            sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sockfd < 0) {
+                fprintf(stderr,"ERROR opening socket");
+                exit(1);
+            }
+
+            /* gethostbyname: get the server's DNS entry */
+            server = gethostbyname(hostname);
+            if (server == NULL) {
+                fprintf(stderr,"ERROR, no such host as %s\n", hostname);
+                exit(1);
+            }
+
+            /* build the server's Internet address */
+            bzero((char *) &serveraddr, sizeof(serveraddr));
+            serveraddr.sin_family = AF_INET;
+            bcopy((char *)server->h_addr, 
+                  (char *)&serveraddr.sin_addr.s_addr, server->h_length);
+            serveraddr.sin_port = htons(portno);
+
+            sprintf(buf, "hello\n");
+
+            /* send the message to the server */
+            serverlen = sizeof(serveraddr);
+            n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
+            if (n < 0)  {
+                fprintf(stderr, "ERROR in sendto");
+                exit(1);
+            }
+            fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
+        }
+
+        /* continue RTL SDR setup ...... */
         
 	if (!dev_given) {
 		dev_index = verbose_device_search("0");
