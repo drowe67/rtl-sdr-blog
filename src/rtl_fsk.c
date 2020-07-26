@@ -54,6 +54,11 @@ static struct FSK *fsk;
 static uint32_t out_block_size = DEFAULT_BUF_LENGTH;
 static unsigned char *rawbuf;
 static size_t nrawbuf = 0;
+static int udp_debug = 0;
+static int sockfd;
+static struct sockaddr_in serveraddr;
+static char hostname[256];
+static int portno = 8001;
 
 void usage(void)
 {
@@ -136,6 +141,21 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
+                    if (udp_debug) {
+                        /* TODO: some sort of rate limiting on messages, based on sample rate, e.g. once per second */
+                        int serverlen;
+                        char buf[256];
+                        int n;
+                        /* send the message to the server */
+                        sprintf(buf, "hello\n");
+                        serverlen = sizeof(serveraddr);
+                        n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
+                        if (n < 0)  {
+                            fprintf(stderr, "ERROR in sendto\n");
+                            exit(1);
+                        }
+                        fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
+                    }
                 }
 
                 /* copy left over to start of buffer */
@@ -164,7 +184,7 @@ int main(int argc, char **argv)
 	uint32_t frequency = 100000000;
 	uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -190,6 +210,10 @@ int main(int argc, char **argv)
 			break;
 		case 'S':
 			sync_mode = 1;
+			break;
+		case 'u':
+                        udp_debug = 1;
+                        strcpy(hostname, optarg);
 			break;
 		default:
 			usage();
@@ -219,15 +243,8 @@ int main(int argc, char **argv)
         nrawbuf = 0;
 
         /* create UDP socket for debug/status information */
-        {
-            int sockfd;
-            char hostname[]="localhost";
-            int portno = 8001;
-            struct sockaddr_in serveraddr;
+        if (udp_debug) {
             struct hostent *server;
-            int serverlen;
-            char buf[256];
-            int n;
             
             /* socket: create the socket */
             sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -249,17 +266,6 @@ int main(int argc, char **argv)
             bcopy((char *)server->h_addr, 
                   (char *)&serveraddr.sin_addr.s_addr, server->h_length);
             serveraddr.sin_port = htons(portno);
-
-            sprintf(buf, "hello\n");
-
-            /* send the message to the server */
-            serverlen = sizeof(serveraddr);
-            n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
-            if (n < 0)  {
-                fprintf(stderr, "ERROR in sendto");
-                exit(1);
-            }
-            fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
         }
 
         /* continue RTL SDR setup ...... */
