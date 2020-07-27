@@ -59,6 +59,8 @@ static int sockfd;
 static struct sockaddr_in serveraddr;
 static char hostname[256];
 static int portno = 8001;
+static uint32_t sample_counter;
+static uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 
 void usage(void)
 {
@@ -142,19 +144,23 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			rtlsdr_cancel_async(dev);
                     }
                     if (udp_debug) {
-                        /* TODO: some sort of rate limiting on messages, based on sample rate, e.g. once per second */
-                        int serverlen;
-                        char buf[256];
-                        int n;
-                        /* send the message to the server */
-                        sprintf(buf, "hello\n");
-                        serverlen = sizeof(serveraddr);
-                        n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
-                        if (n < 0)  {
-                            fprintf(stderr, "ERROR in sendto\n");
-                            exit(1);
+                        sample_counter += fsk_nin(fsk);
+                        if (sample_counter > samp_rate) {
+                            /* one second has passed, lets send some debug information */
+                            int serverlen;
+                            char buf[256];
+                            int n;
+                            sample_counter -= samp_rate;
+                            /* send the message to the server */
+                            sprintf(buf, "hello\n");
+                            serverlen = sizeof(serveraddr);
+                            n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
+                            if (n < 0)  {
+                                fprintf(stderr, "ERROR in sendto\n");
+                                exit(1);
+                            }
+                            fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
                         }
-                        fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
                     }
                 }
 
@@ -182,7 +188,6 @@ int main(int argc, char **argv)
 	int dev_index = 0;
 	int dev_given = 0;
 	uint32_t frequency = 100000000;
-	uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:")) != -1) {
 		switch (opt) {
