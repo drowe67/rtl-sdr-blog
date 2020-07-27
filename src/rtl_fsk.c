@@ -46,6 +46,7 @@
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
+#define BUF_SZ                          256
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -74,6 +75,7 @@ void usage(void)
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
+		"\t[-u hostname (optional host to send debug information to on port 8001)\n"
 		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE);
 	exit(1);
 }
@@ -99,6 +101,17 @@ static void sighandler(int signum)
 }
 #endif
 
+static void udp_sendbuf(char buf[]) {
+    int n;
+
+    /* send the message to the server */
+    n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
+    if (n < 0)  {
+        fprintf(stderr, "ERROR in sendto\n");
+        exit(1);
+    }
+}
+                                
 static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
         unsigned char *pout;
@@ -146,20 +159,23 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                     if (udp_debug) {
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
+                            char buf[BUF_SZ];
+                            size_t Ndft;
                             /* one second has passed, lets send some debug information */
-                            int serverlen;
-                            char buf[256];
-                            int n;
                             sample_counter -= samp_rate;
-                            /* send the message to the server */
-                            sprintf(buf, "hello\n");
-                            serverlen = sizeof(serveraddr);
-                            n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, serverlen);
-                            if (n < 0)  {
-                                fprintf(stderr, "ERROR in sendto\n");
-                                exit(1);
+
+                            /* Print a sample of the FFT from the freq estimator */
+                            snprintf(buf, BUF_SZ, "{"); udp_sendbuf(buf);
+                            snprintf(buf, BUF_SZ, "\"Sf\":["); udp_sendbuf(buf);
+                            Ndft = fsk->Ndft;
+                            for(i=0; i<Ndft; i++) {
+                                snprintf(buf, BUF_SZ, "%f ",(fsk->Sf)[i]); udp_sendbuf(buf);
+                                if(i<Ndft-1) { snprintf(buf, BUF_SZ, ","); udp_sendbuf(buf); }
                             }
-                            fprintf(stderr,"UDP message sent to %s:%d\n", hostname, portno);
+                            snprintf(buf, BUF_SZ, "]"); udp_sendbuf(buf);
+                            /* TODO: tone freq ests, SNRest, maybe buffer sample clock offsets and send as an array */
+                            snprintf(buf, BUF_SZ, "}\n"); udp_sendbuf(buf);
+                            fprintf(stderr, "Tick\n");
                         }
                     }
                 }
