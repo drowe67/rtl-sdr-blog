@@ -46,7 +46,7 @@
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
-#define BUF_SZ                          256
+#define BUF_SZ                          8192
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -160,21 +160,26 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
                             char buf[BUF_SZ];
+                            char buf1[BUF_SZ];
                             size_t Ndft;
+
                             /* one second has passed, lets send some debug information */
                             sample_counter -= samp_rate;
+                            buf[0]=0;
 
                             /* Print a sample of the FFT from the freq estimator */
-                            snprintf(buf, BUF_SZ, "{"); udp_sendbuf(buf);
-                            snprintf(buf, BUF_SZ, "\"Sf\":["); udp_sendbuf(buf);
+                            snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
+                            snprintf(buf1, BUF_SZ, "\"Sf\":["); strncat(buf, buf1, BUF_SZ);
+                            
                             Ndft = fsk->Ndft;
                             for(i=0; i<Ndft; i++) {
-                                snprintf(buf, BUF_SZ, "%f ",(fsk->Sf)[i]); udp_sendbuf(buf);
-                                if(i<Ndft-1) { snprintf(buf, BUF_SZ, ","); udp_sendbuf(buf); }
+                                snprintf(buf1, BUF_SZ, "%f ",(fsk->Sf)[i]); strncat(buf, buf1, BUF_SZ);
+                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ","); strncat(buf, buf1, BUF_SZ); }
                             }
-                            snprintf(buf, BUF_SZ, "]"); udp_sendbuf(buf);
+                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ); 
                             /* TODO: tone freq ests, SNRest, maybe buffer sample clock offsets and send as an array */
-                            snprintf(buf, BUF_SZ, "}\n"); udp_sendbuf(buf);
+                            snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
+                            udp_sendbuf(buf);
                             fprintf(stderr, "Tick\n");
                         }
                     }
