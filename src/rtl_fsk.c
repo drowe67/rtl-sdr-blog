@@ -159,25 +159,45 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                     if (udp_debug) {
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
-                            char buf[BUF_SZ];
-                            char buf1[BUF_SZ];
-                            size_t Ndft;
-
                             /* one second has passed, lets send some debug information */
+                            char   buf[BUF_SZ];
+                            char   buf1[BUF_SZ];
+                            size_t Ndft;
+                            float *f_est;
+                            int    m;
+                            
                             sample_counter -= samp_rate;
                             buf[0]=0;
 
-                            /* Print a sample of the FFT from the freq estimator */
+                            /* Current magnitude spectrum Sf[] from freq estimator */
+                            
                             snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
                             snprintf(buf1, BUF_SZ, "\"Sf\":["); strncat(buf, buf1, BUF_SZ);
                             
                             Ndft = fsk->Ndft;
                             for(i=0; i<Ndft; i++) {
-                                snprintf(buf1, BUF_SZ, "%f ",(fsk->Sf)[i]); strncat(buf, buf1, BUF_SZ);
-                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ","); strncat(buf, buf1, BUF_SZ); }
+                                snprintf(buf1, BUF_SZ, "%f",(fsk->Sf)[i]); strncat(buf, buf1, BUF_SZ);
+                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
                             }
-                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ); 
-                            /* TODO: tone freq ests, SNRest, maybe buffer sample clock offsets and send as an array */
+                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+                            
+                            /* FSK tone freq estimates */
+                            
+                            if (fsk->freq_est_type)
+                                f_est = fsk->f2_est;
+                            else
+                                f_est = fsk->f_est;
+                            snprintf(buf1, BUF_SZ, ", \"f_est\":["); strncat(buf, buf1, BUF_SZ);
+                            for(m=0; m<fsk->mode; m++) {
+                                snprintf(buf1, BUF_SZ, "%f", f_est[m]); strncat(buf, buf1, BUF_SZ);
+                                if (m < (fsk->mode-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+                            }
+                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+
+                            snprintf(buf1, BUF_SZ, ", \"SNRest\":[%f], \"Fs\":[%d]",
+                                     fsk->SNRest, fsk->Fs); strncat(buf, buf1, BUF_SZ);
+                            
+                            /* finish up JSON and send to GUI */
                             snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
                             udp_sendbuf(buf);
                             fprintf(stderr, "Tick\n");
