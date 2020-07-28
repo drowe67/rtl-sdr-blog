@@ -47,6 +47,7 @@
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
 #define BUF_SZ                          8192
+#define NORM_RX_TIMING_LOG_SZ           1024
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -58,10 +59,11 @@ static size_t nrawbuf = 0;
 static int udp_debug = 0;
 static int sockfd;
 static struct sockaddr_in serveraddr;
-static char hostname[256];
 static int portno = 8001;
 static uint32_t sample_counter;
 static uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
+static float norm_rx_timing_log[NORM_RX_TIMING_LOG_SZ];
+static uint32_t norm_rx_timing_log_index = 0;
 
 void usage(void)
 {
@@ -156,6 +158,11 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
+                    if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
+                        norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
+                    else
+                        fprintf(stderr, "norm_rx_timing_log full!");
+                    
                     if (udp_debug) {
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
@@ -187,14 +194,22 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                                 f_est = fsk->f2_est;
                             else
                                 f_est = fsk->f_est;
-                            snprintf(buf1, BUF_SZ, ", \"f_est\":["); strncat(buf, buf1, BUF_SZ);
+                            snprintf(buf1, BUF_SZ, ", \"f_est_Hz\":["); strncat(buf, buf1, BUF_SZ);
                             for(m=0; m<fsk->mode; m++) {
                                 snprintf(buf1, BUF_SZ, "%f", f_est[m]); strncat(buf, buf1, BUF_SZ);
                                 if (m < (fsk->mode-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
                             }
                             snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
 
-                            snprintf(buf1, BUF_SZ, ", \"SNRest\":[%f], \"Fs\":[%d]",
+                            snprintf(buf1, BUF_SZ, ", \"norm_rx_timing\":["); strncat(buf, buf1, BUF_SZ);
+                            for(i=0; i<norm_rx_timing_log_index; i++) {
+                                snprintf(buf1, BUF_SZ, "%f", norm_rx_timing_log[i]); strncat(buf, buf1, BUF_SZ);
+                                if (i < (norm_rx_timing_log_index-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+                            }
+                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+                            norm_rx_timing_log_index = 0;
+                            
+                            snprintf(buf1, BUF_SZ, ", \"SNRest_lin\":%f, \"Fs_Hz\":%d",
                                      fsk->SNRest, fsk->Fs); strncat(buf, buf1, BUF_SZ);
                             
                             /* finish up JSON and send to GUI */
@@ -228,6 +243,7 @@ int main(int argc, char **argv)
 	uint8_t *buffer;
 	int dev_index = 0;
 	int dev_given = 0;
+        char hostname[256];
 	uint32_t frequency = 100000000;
 
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:")) != -1) {
@@ -313,7 +329,7 @@ int main(int argc, char **argv)
                   (char *)&serveraddr.sin_addr.s_addr, server->h_length);
             serveraddr.sin_port = htons(portno);
         }
-
+        
         /* continue RTL SDR setup ...... */
         
 	if (!dev_given) {
