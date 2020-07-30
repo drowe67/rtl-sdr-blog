@@ -56,7 +56,7 @@ static struct FSK *fsk;
 static uint32_t out_block_size = DEFAULT_BUF_LENGTH;
 static unsigned char *rawbuf;
 static size_t nrawbuf = 0;
-static int udp_debug = 0;
+static int dashboard = 0;
 static int sockfd;
 static struct sockaddr_in serveraddr;
 static int portno = 8001;
@@ -77,7 +77,7 @@ void usage(void)
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
-		"\t[-u hostname (optional host to send debug information to on port 8001)\n"
+		"\t[-u hostname (optional hostname:8001 where we send UDP dashboard diagnostics)\n"
 		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE);
 	exit(1);
 }
@@ -158,12 +158,14 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
-                    if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
-                        norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
-                    else
-                        fprintf(stderr, "norm_rx_timing_log full!");
+                    if (dashboard) {
+                        if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
+                            norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
+                        else
+                            fprintf(stderr, "norm_rx_timing_log full!");
+                    }
                     
-                    if (udp_debug) {
+                    if (dashboard) {
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
                             /* one second has passed, lets send some debug information */
@@ -274,7 +276,7 @@ int main(int argc, char **argv)
 			sync_mode = 1;
 			break;
 		case 'u':
-                        udp_debug = 1;
+                        dashboard = 1;
                         strcpy(hostname, optarg);
 			break;
 		default:
@@ -305,7 +307,7 @@ int main(int argc, char **argv)
         nrawbuf = 0;
 
         /* create UDP socket for debug/status information */
-        if (udp_debug) {
+        if (dashboard) {
             struct hostent *server;
             
             /* socket: create the socket */
