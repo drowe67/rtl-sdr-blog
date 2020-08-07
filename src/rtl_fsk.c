@@ -18,6 +18,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+
+
+//added M flag and R flag (for Rs) as command line options 
+
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
@@ -74,6 +78,8 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g gain (default: 0 for auto)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-M modn order (default: 2)]\n"
+		"\t[-R symbol rate (default: 10000)]\n"
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
@@ -247,8 +253,10 @@ int main(int argc, char **argv)
 	int dev_given = 0;
         char hostname[256];
 	uint32_t frequency = 100000000;
+	int  M =2;
+	int  Rs = 10000;  
 
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:M:R:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -278,6 +286,12 @@ int main(int argc, char **argv)
 		case 'u':
                         dashboard = 1;
                         strcpy(hostname, optarg);
+			break;
+		case 'M':
+		        M = atoi(optarg);                        
+			break;
+		case 'R':
+		        Rs = atoi(optarg);                        
 			break;
 		default:
 			usage();
@@ -391,8 +405,8 @@ int main(int argc, char **argv)
         {
             /* TODO: make some of these command line options */
             int Fs = DEFAULT_SAMPLE_RATE;
-            int Rs = 10000;
-            int M  = 2;
+            // int Rs = 10000;
+            // int M  = 2;
             int P  = Fs/Rs;
             fsk = fsk_create_hbr(Fs,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
         }
