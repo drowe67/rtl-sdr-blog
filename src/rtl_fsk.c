@@ -18,6 +18,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+
+
+//added M flag and R flag (for Rs) as command line options 
+
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
@@ -78,6 +82,8 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g gain (default: 0 for auto)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-M modn order (default: 2)]\n"
+		"\t[-R symbol rate (default: 10000)]\n"
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
@@ -302,6 +308,12 @@ int main(int argc, char **argv)
                         dashboard = 1;
                         strcpy(hostname, optarg);
 			break;
+		case 'M':
+		        M = atoi(optarg);                        
+			break;
+		case 'R':
+		        Rs = atoi(optarg);                        
+			break;
 		default:
 			usage();
 			break;
@@ -414,9 +426,8 @@ int main(int argc, char **argv)
         
         {
             /* TODO: make some of these command line options */
-            int Fs = samp_rate;
-            int P  = Fs/Rs;
-            fsk = fsk_create_hbr(Fs,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
+            int P  = samp_rate/Rs;
+            fsk = fsk_create_hbr(samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
             fprintf(stderr,"FSK Demod Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
