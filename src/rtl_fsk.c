@@ -48,6 +48,9 @@
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
 #define BUF_SZ                          8192
 #define NORM_RX_TIMING_LOG_SZ           1024
+#define DEFAULT_SYMBOL_RATE		10000        /* symbols/s */
+#define DEFAULT_M		        2            /* 2FSK      */
+#define NDFT                            256          /* number of DFT points on dashboard */
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -56,6 +59,7 @@ static struct FSK *fsk;
 static uint32_t out_block_size = DEFAULT_BUF_LENGTH;
 static unsigned char *rawbuf;
 static size_t nrawbuf = 0;
+static size_t nrawbuf_max = 0;
 static int dashboard = 0;
 static int sockfd;
 static struct sockaddr_in serveraddr;
@@ -77,8 +81,10 @@ void usage(void)
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
+		"\t[-r FSK modem symbol rate (default: %d Hz)]\n"
+		"\t[-m number of FSK modem tones (default: %d)]\n"
 		"\t[-u hostname (optional hostname:8001 where we send UDP dashboard diagnostics)\n"
-		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE);
+		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE, DEFAULT_SYMBOL_RATE, DEFAULT_M);
 	exit(1);
 }
 
@@ -141,7 +147,8 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                 memcpy(&rawbuf[nrawbuf],buf,len);
                 nrawbuf += len;
                 assert(nrawbuf < 2*out_block_size);
-
+                assert(nrawbuf < nrawbuf_max);
+                
                 /* process as many samples in rawbuf as possible */
                 pout = rawbuf;
                 while(nrawbuf >= 2*fsk_nin(fsk)) {
@@ -158,41 +165,49 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
+                    
                     if (dashboard) {
+                        /* update buffer of timing samples */
                         if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
                             norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
                         else
                             fprintf(stderr, "norm_rx_timing_log full!");
-                    }
-                    
-                    if (dashboard) {
                         sample_counter += fsk_nin(fsk);
                         if (sample_counter > samp_rate) {
-                            /* one second has passed, lets send some debug information */
+                            /* one second has passed, lets send some dashboard information */
                             char   buf[BUF_SZ];
                             char   buf1[BUF_SZ];
                             size_t Ndft;
-                            float *f_est;
-                            int    m;
+                            float *f_est, sum;
+                            int    m, step, start, k;
+                            float  SfdB[NDFT];
                             
                             sample_counter -= samp_rate;
                             buf[0]=0;
 
                             /* Current magnitude spectrum Sf[] from freq estimator */
-                            
-                            snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
-                            snprintf(buf1, BUF_SZ, "\"Sf\":["); strncat(buf, buf1, BUF_SZ);
-                            
-                            Ndft = fsk->Ndft;
-                            for(i=0; i<Ndft; i++) {
-                                snprintf(buf1, BUF_SZ, "%f",(fsk->Sf)[i]); strncat(buf, buf1, BUF_SZ);
-                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+
+                            /* Limit spectrum to NDFT points */                           
+                            step = fsk->Ndft/NDFT;                          
+                            for(i=0, start=0; i<NDFT; i++, start+=step) {
+                                /* Sf[] array is linear magnitudes */
+                                sum = 0.0;
+                                for(k=0; k<step; k++)
+                                    sum += fsk->Sf[start+k];
+                                SfdB[i] = 20.0*log10(sum);
                             }
-                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+                                                        
+                            snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
+                            snprintf(buf1, BUF_SZ, "\"SfdB\":["); strncat(buf, buf1, BUF_SZ);
+                            for(i=0; i<NDFT; i++) {
+                                snprintf(buf1, BUF_SZ, "%f",SfdB[i]); strncat(buf, buf1, BUF_SZ);
+                                if(i<NDFT-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+                             }
+                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);                           
                             
                             /* FSK tone freq estimates */
-                            
-                            if (fsk->freq_est_type)
+
+                             if (fsk->freq_est_type)
                                 f_est = fsk->f2_est;
                             else
                                 f_est = fsk->f_est;
@@ -214,7 +229,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                             snprintf(buf1, BUF_SZ, ", \"SNRest_lin\":%f, \"Fs_Hz\":%d",
                                      fsk->SNRest, fsk->Fs); strncat(buf, buf1, BUF_SZ);
                             
-                            /* finish up JSON and send to GUI */
+                            /* finish up JSON and send to dashboard GUI over UDP */
                             snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
                             udp_sendbuf(buf);
                             fprintf(stderr, "Tick\n");
@@ -247,8 +262,10 @@ int main(int argc, char **argv)
 	int dev_given = 0;
         char hostname[256];
 	uint32_t frequency = 100000000;
-
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:")) != -1) {
+        int Rs = DEFAULT_SYMBOL_RATE;
+        int M = DEFAULT_M;
+        
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -271,6 +288,12 @@ int main(int argc, char **argv)
 			break;
 		case 'n':
 			bytes_to_read = (uint32_t)atof(optarg) * 2;
+			break;
+		case 'r':
+			Rs = atoi(optarg);
+			break;
+		case 'm':
+			M = atoi(optarg);
 			break;
 		case 'S':
 			sync_mode = 1;
@@ -303,7 +326,8 @@ int main(int argc, char **argv)
 	}
 
 	buffer = malloc(out_block_size * sizeof(uint8_t));
-	rawbuf = malloc(2 * out_block_size * sizeof(uint8_t));
+        nrawbuf_max = 2 * out_block_size;
+	rawbuf = malloc(nrawbuf_max * sizeof(uint8_t));
         nrawbuf = 0;
 
         /* create UDP socket for debug/status information */
@@ -390,17 +414,16 @@ int main(int argc, char **argv)
         
         {
             /* TODO: make some of these command line options */
-            int Fs = DEFAULT_SAMPLE_RATE;
-            int Rs = 10000;
-            int M  = 2;
+            int Fs = samp_rate;
             int P  = Fs/Rs;
             fsk = fsk_create_hbr(Fs,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
+            fprintf(stderr,"FSK Demod Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
             /* TODO: fsk_lower might need some adjustment, so we avoid the RTLSDR DC line.  We really need a GUI
                plot of the spectrum and tone estimates to observe what's going on */
             int fsk_lower = 0;
-            int fsk_upper = DEFAULT_SAMPLE_RATE/2;
+            int fsk_upper = samp_rate/2;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
         }
