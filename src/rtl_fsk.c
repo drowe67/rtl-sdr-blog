@@ -174,7 +174,8 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
-                    
+                    if((FILE*)ctx == stdout) fflush((FILE*)ctx);
+
                     if (dashboard) {
                         /* update buffer of timing samples */
                         if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
