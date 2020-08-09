@@ -55,6 +55,7 @@
 #define DEFAULT_SYMBOL_RATE		10000        /* symbols/s */
 #define DEFAULT_M		        2            /* 2FSK      */
 #define NDFT                            256          /* number of DFT points on dashboard */
+#define DEFAULT_CHANNEL_WIDTH           25000        /* 25 kHz channel for freq est */
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -72,6 +73,8 @@ static uint32_t sample_counter;
 static uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 static float norm_rx_timing_log[NORM_RX_TIMING_LOG_SZ];
 static uint32_t norm_rx_timing_log_index = 0;
+static int fsk_lower = 0;
+static int fsk_upper = 0;
 
 void usage(void)
 {
@@ -213,7 +216,9 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                             
                             /* FSK tone freq estimates */
 
-                             if (fsk->freq_est_type)
+                            snprintf(buf1, BUF_SZ, ", \"fsk_lower_Hz\":%d, \"fsk_upper_Hz\":%d",
+                                     fsk_lower, fsk_upper); strncat(buf, buf1, BUF_SZ);
+                            if (fsk->freq_est_type)
                                 f_est = fsk->f2_est;
                             else
                                 f_est = fsk->f_est;
@@ -270,8 +275,9 @@ int main(int argc, char **argv)
 	uint32_t frequency = 100000000;
         int Rs = DEFAULT_SYMBOL_RATE;
         int M = DEFAULT_M;
+        int channel_width = DEFAULT_CHANNEL_WIDTH;
         
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:c:M:R:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -295,9 +301,11 @@ int main(int argc, char **argv)
 		case 'n':
 			bytes_to_read = (uint32_t)atof(optarg) * 2;
 			break;
+		case 'R':
 		case 'r':
 			Rs = atoi(optarg);
 			break;
+		case 'M':
 		case 'm':
 			M = atoi(optarg);
 			break;
@@ -308,12 +316,11 @@ int main(int argc, char **argv)
                         dashboard = 1;
                         strcpy(hostname, optarg);
 			break;
-		case 'M':
 		        M = atoi(optarg);                        
 			break;
-		case 'R':
-		        Rs = atoi(optarg);                        
-			break;
+                case 'c':
+                        channel_width = atoi(optarg);
+                        break;
 		default:
 			usage();
 			break;
@@ -425,16 +432,15 @@ int main(int argc, char **argv)
 	}
         
         {
-            /* TODO: make some of these command line options */
             int P  = samp_rate/Rs;
             fsk = fsk_create_hbr(samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
             fprintf(stderr,"FSK Demod Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
-            /* TODO: fsk_lower might need some adjustment, so we avoid the RTLSDR DC line.  We really need a GUI
-               plot of the spectrum and tone estimates to observe what's going on */
-            int fsk_lower = 0;
-            int fsk_upper = samp_rate/2;
+            /* set minimum "channel" for freq est */
+            fsk_lower = 0;
+            fsk_upper = 4*Rs;
+            if (fsk_upper < channel_width) fsk_upper = channel_width;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
         }
