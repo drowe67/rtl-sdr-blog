@@ -439,8 +439,9 @@ int main(int argc, char **argv)
         }
         {
             /* set minimum "channel" for freq est */
-            fsk_lower = 0;
+            fsk_lower = Rs/2;
             fsk_upper = 4*Rs;
+            if (fsk_lower < 2000) fsk_lower = 2000;
             if (fsk_upper < channel_width) fsk_upper = channel_width;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
