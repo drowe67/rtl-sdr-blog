@@ -230,6 +230,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                     }
                     csdr_decimate_cc((float*)pmodembuf, csdr_in, CSDR_BUFSIZE, csdr_taps, csdr_padded_taps_length, csdr_factor,
                                      &csdr_nout, &csdr_nin);
+                    fwrite((float*)pmodembuf, sizeof(complexf), csdr_nout, (FILE*)ctx); 
                     /* place resampled signal in modem input buf */
                     pmodembuf += csdr_nout;
                     nmodembuf += csdr_nout;
@@ -245,19 +246,23 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                 /* when we have fsk_nin() samples run demod ----------------------------- */
                 
                 pmodembuf = modembuf;
+                //fprintf(stderr, "start demod loop -----\n");
                 while(nmodembuf >= fsk_nin(fsk)) {
+                    // fprintf(stderr, "  nmodembuf: %ld fsk_nin: %d\n", nmodembuf, fsk_nin(fsk));
                     prev_fsk_nin = fsk_nin(fsk);       /* fsk_nin gets updated in fsk_demod() */
                     fsk_demod(fsk, bitbuf, pmodembuf);
-                    pmodembuf += 2*prev_fsk_nin;
-                    nmodembuf -= 2*prev_fsk_nin;
+                    pmodembuf += prev_fsk_nin;
+                    nmodembuf -= prev_fsk_nin;
                     assert(nmodembuf >= 0);
-                    
+
+                    #ifdef TMPOUT
                     /* output demodulated bits */
                     if (fwrite(bitbuf, 1, fsk->Nbits, (FILE*)ctx) != (unsigned int)fsk->Nbits) {
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
                     if((FILE*)ctx == stdout) fflush((FILE*)ctx);
+                    #endif
                     
                     if (dashboard) {
                         /* update buffer of timing samples */
@@ -266,7 +271,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                         else
                             fprintf(stderr, "norm_rx_timing_log full!");
                         sample_counter += fsk_nin(fsk);
-                        if (sample_counter > samp_rate) {
+                        if (sample_counter > DEFAULT_MODEM_SAMPLE_RATE) {
                             /* one second has passed, lets send some dashboard information */
                             char   buf[BUF_SZ];
                             char   buf1[BUF_SZ];
@@ -275,26 +280,33 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                             int    m, step, start, k;
                             float  SfdB[NDFT];
                             
-                            sample_counter -= samp_rate;
+                            sample_counter -= DEFAULT_MODEM_SAMPLE_RATE;
                             buf[0]=0;
 
                             /* Current magnitude spectrum Sf[] from freq estimator */
 
-                            /* Limit spectrum to NDFT points */                           
-                            step = fsk->Ndft/NDFT;                          
-                            for(i=0, start=0; i<NDFT; i++, start+=step) {
+                            /* Limit spectrum to NDFT points */
+                            if (fsk->Ndft > NDFT) {
+                                step = fsk->Ndft/NDFT;
+                                Ndft = NDFT;
+                            } else {
+                                step = 1;
+                                Ndft = fsk->Ndft;
+                            }                                  
+                                
+                            for(i=0, start=0; i<Ndft; i++, start+=step) {
                                 /* Sf[] array is linear magnitudes */
                                 sum = 0.0;
                                 for(k=0; k<step; k++)
                                     sum += fsk->Sf[start+k];
-                                SfdB[i] = 20.0*log10(sum);
+                                SfdB[i] = 20.0*log10(sum+1E-6);
                             }
-                                                        
+                                    
                             snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
                             snprintf(buf1, BUF_SZ, "\"SfdB\":["); strncat(buf, buf1, BUF_SZ);
-                            for(i=0; i<NDFT; i++) {
+                            for(i=0; i<Ndft; i++) {
                                 snprintf(buf1, BUF_SZ, "%f",SfdB[i]); strncat(buf, buf1, BUF_SZ);
-                                if(i<NDFT-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
                              }
                             snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);                           
                             
@@ -333,7 +345,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                 }
 
                 /* copy left over modem saples to start of buffer */
-                memmove(modembuf,pmodembuf,nmodembuf*sizeof(COMP));
+                memmove(modembuf, pmodembuf, nmodembuf*sizeof(COMP));
                 
 		if (bytes_to_read > 0)
 			bytes_to_read -= len;
@@ -539,7 +551,8 @@ int main(int argc, char **argv)
         {
             int P = DEFAULT_MODEM_SAMPLE_RATE/Rs;
             fsk = fsk_create_hbr(DEFAULT_MODEM_SAMPLE_RATE,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
-            fprintf(stderr,"FSK Demod Fs: %d Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", DEFAULT_MODEM_SAMPLE_RATE,
+            fprintf(stderr,"FSK Demod Fs: %5.1f kHz Rs: %3.1f kHz M: %d P: %d Ndft: %d\n",
+                    (float)DEFAULT_MODEM_SAMPLE_RATE/1000,
                     (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
@@ -548,6 +561,7 @@ int main(int argc, char **argv)
             fsk_upper = 4*Rs;
             if (fsk_lower < 2000) fsk_lower = 2000;
             if (fsk_upper < channel_width) fsk_upper = channel_width;
+            if (fsk_upper > DEFAULT_MODEM_SAMPLE_RATE/2) fsk_upper = DEFAULT_MODEM_SAMPLE_RATE/2;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
         }
