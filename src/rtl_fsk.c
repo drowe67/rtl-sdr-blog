@@ -78,8 +78,9 @@ static int sockfd;
 static struct sockaddr_in serveraddr;
 static int portno = 8001;
 
-static uint32_t sample_counter;
 static uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
+static uint32_t modem_samp_rate = DEFAULT_MODEM_SAMPLE_RATE;
+static uint32_t sample_counter;
 static float norm_rx_timing_log[NORM_RX_TIMING_LOG_SZ];
 static uint32_t norm_rx_timing_log_index = 0;
 static int fsk_lower = 0;
@@ -271,7 +272,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                         else
                             fprintf(stderr, "norm_rx_timing_log full!");
                         sample_counter += fsk_nin(fsk);
-                        if (sample_counter > DEFAULT_MODEM_SAMPLE_RATE) {
+                        if (sample_counter > modem_samp_rate) {
                             /* one second has passed, lets send some dashboard information */
                             char   buf[BUF_SZ];
                             char   buf1[BUF_SZ];
@@ -280,7 +281,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                             int    m, step, start, k;
                             float  SfdB[NDFT];
                             
-                            sample_counter -= DEFAULT_MODEM_SAMPLE_RATE;
+                            sample_counter -= modem_samp_rate;
                             buf[0]=0;
 
                             /* Current magnitude spectrum Sf[] from freq estimator */
@@ -339,7 +340,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                             /* finish up JSON and send to dashboard GUI over UDP */
                             snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
                             udp_sendbuf(buf);
-                            fprintf(stderr, "Tick\n");
+                            fprintf(stderr, ".");
                         }
                     }
                 }
@@ -445,8 +446,8 @@ int main(int argc, char **argv)
 	rawbuf = malloc(nrawbuf_max * sizeof(uint8_t)); assert(rawbuf != NULL);
         nrawbuf = 0;
 
-        assert((samp_rate % DEFAULT_MODEM_SAMPLE_RATE) == 0);
-        nmodembuf_max = nrawbuf_max*samp_rate/DEFAULT_MODEM_SAMPLE_RATE;
+        assert((samp_rate % modem_samp_rate) == 0);
+        nmodembuf_max = nrawbuf_max*samp_rate/modem_samp_rate;
         modembuf = (COMP*)malloc(nmodembuf_max * sizeof(COMP)); assert(modembuf != NULL);
 
         /* create UDP socket for dashboard debug/status information ----------------------------- */
@@ -538,7 +539,7 @@ int main(int argc, char **argv)
             float transition_bw = 0.05;
             window_t window = WINDOW_DEFAULT;
 
-            csdr_factor = samp_rate/DEFAULT_MODEM_SAMPLE_RATE;
+            csdr_factor = samp_rate/modem_samp_rate;
             csdr_taps = csdr_init_decimate_cc(csdr_factor, transition_bw, window, &csdr_padded_taps_length);
             assert(CSDR_BUFSIZE > padded_taps_length);
 
@@ -549,10 +550,10 @@ int main(int argc, char **argv)
         /* Setup the FSK demod -------------------------------------------------*/
         
         {
-            int P = DEFAULT_MODEM_SAMPLE_RATE/Rs;
-            fsk = fsk_create_hbr(DEFAULT_MODEM_SAMPLE_RATE,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
+            int P = modem_samp_rate/Rs;
+            fsk = fsk_create_hbr(modem_samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
             fprintf(stderr,"FSK Demod Fs: %5.1f kHz Rs: %3.1f kHz M: %d P: %d Ndft: %d\n",
-                    (float)DEFAULT_MODEM_SAMPLE_RATE/1000,
+                    (float)modem_samp_rate/1000,
                     (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
@@ -561,7 +562,7 @@ int main(int argc, char **argv)
             fsk_upper = 4*Rs;
             if (fsk_lower < 2000) fsk_lower = 2000;
             if (fsk_upper < channel_width) fsk_upper = channel_width;
-            if (fsk_upper > DEFAULT_MODEM_SAMPLE_RATE/2) fsk_upper = DEFAULT_MODEM_SAMPLE_RATE/2;
+            if (fsk_upper > (int)modem_samp_rate/2) fsk_upper = modem_samp_rate/2;
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
         }
