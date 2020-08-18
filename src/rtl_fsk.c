@@ -47,16 +47,23 @@
 #include "fsk.h"
 #include "libcsdr.h"
 
-#define DEFAULT_SAMPLE_RATE		240000
+/* rtlsdr  ------------------------------------*/
+
+#define DEFAULT_SAMPLE_RATE		1800000
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
 #define BUF_SZ                          8192
-#define NORM_RX_TIMING_LOG_SZ           1024
+
+/* fsk modem ----------------------------------*/
+
+#define CSDR_BUFSIZE 1024
+#define DEFAULT_MODEM_SAMPLE_RATE       40000        /* sample rate we run demod at */
 #define DEFAULT_SYMBOL_RATE		10000        /* symbols/s */
 #define DEFAULT_M		        2            /* 2FSK      */
 #define NDFT                            256          /* number of DFT points on dashboard */
 #define DEFAULT_CHANNEL_WIDTH           25000        /* 25 kHz channel for freq est */
+#define NORM_RX_TIMING_LOG_SZ           1024
 
 static int do_exit = 0;
 static uint32_t bytes_to_read = 0;
@@ -70,12 +77,24 @@ static int dashboard = 0;
 static int sockfd;
 static struct sockaddr_in serveraddr;
 static int portno = 8001;
+
 static uint32_t sample_counter;
 static uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 static float norm_rx_timing_log[NORM_RX_TIMING_LOG_SZ];
 static uint32_t norm_rx_timing_log_index = 0;
 static int fsk_lower = 0;
 static int fsk_upper = 0;
+
+static int csdr_factor;
+static float csdr_in[CSDR_BUFSIZE*2];
+static float csdr_out[CSDR_BUFSIZE*2];
+static int csdr_nout, csdr_nin;
+static int csdr_padded_taps_length;
+static float *csdr_taps;
+
+static COMP* modembuf;
+static size_t nmodembuf = 0;
+static size_t nmodembuf_max = 0;
 
 void usage(void)
 {
@@ -130,11 +149,53 @@ static void udp_sendbuf(char buf[]) {
     }
 }
                                 
+static void csdr_decimate_cc(float *out, float *in, int the_bufsize, float *taps, int taps_length, int factor, int *nout, int *next_nin) {
+    int output_size, input_skip;
+    
+    output_size=fir_decimate_cc((complexf*)in, (complexf*)out, the_bufsize, factor, taps, taps_length);
+    input_skip=factor*output_size;
+    memmove((complexf*)in,((complexf*)in)+input_skip,(the_bufsize-input_skip)*sizeof(complexf));
+    *nout = output_size;
+    *next_nin = input_skip;
+}
+
+static float *csdr_init_decimate_cc(int factor, float transition_bw, window_t window, int *padded_taps_length) {
+    int    taps_length;
+    float *taps;
+    int    i;
+    
+    fprintf(stderr,"fir_decimate_cc: factor = %d window = %s\n", factor, firdes_get_string_from_window(window));
+    taps_length = firdes_filter_len(transition_bw);
+    fprintf(stderr,"fir_decimate_cc: taps_length = %d\n",taps_length);
+
+    // allocate taps array
+    *padded_taps_length = taps_length;
+#define NEON_ALIGNMENT (4*4*2)
+#ifdef NEON_OPTS
+    errhead(); fprintf(stderr,"taps_length = %d\n", taps_length);
+    *padded_taps_length = taps_length+(NEON_ALIGNMENT/4)-1 - ((taps_length+(NEON_ALIGNMENT/4)-1)%(NEON_ALIGNMENT/4));
+    fprintf(stderr,"padded_taps_length = %d\n", *padded_taps_length);
+
+    taps = (float*) (float*)malloc((*padded_taps_length+NEON_ALIGNMENT)*sizeof(float));
+    fprintf(stderr,"taps = %x\n", taps);
+    taps =  (float*)((((unsigned)taps)+NEON_ALIGNMENT-1) & ~(NEON_ALIGNMENT-1));
+    errhead(); fprintf(stderr,"NEON aligned taps = %x\n", taps);
+    for(i=0;i<*padded_taps_length-taps_length;i++) taps[taps_length+i]=0;
+#else
+    taps = (float*)malloc(taps_length*sizeof(float));
+#endif
+
+    firdes_lowpass_f(taps,taps_length, 0.5/(float)factor,window);
+    return taps;
+}
+
 static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
         unsigned char *pout;
         unsigned int   i;
         unsigned char  bitbuf[fsk->Nbits];
+        COMP          *pmodembuf;
+        int            prev_fsk_nin;
         
 	if (ctx) {
 		if (do_exit)
@@ -153,30 +214,51 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		}
                 */
 
-                /* append to existing samples in rawbuf */
+                /* resample rawbuf to demod sample rate ------------------------------- */
+
                 memcpy(&rawbuf[nrawbuf],buf,len);
                 nrawbuf += len;
                 assert(nrawbuf < 2*out_block_size);
                 assert(nrawbuf < nrawbuf_max);
-                
-                /* process as many samples in rawbuf as possible */
                 pout = rawbuf;
-                while(nrawbuf >= 2*fsk_nin(fsk)) {
-                    COMP modbuf[fsk->N+fsk->Ts*2];  /* max nin value with timing slips */
-                    /* complex unsigned 8 bit to float conversion */
-                    for(i=0;i<fsk_nin(fsk);i++){
-                        modbuf[i].real = ((float)pout[2*i]-127.0)/128.0;
-                        modbuf[i].imag = ((float)pout[2*i+1]-127.0)/128.0;
+                pmodembuf = modembuf + nmodembuf;
+                while(nrawbuf >= 2*(size_t)csdr_nin) {
+                    complexf *pcsdr_in = ((complexf*)csdr_in)+(CSDR_BUFSIZE-csdr_nin);
+                    for(i=0;i<(uint32_t)csdr_nin;i++) {
+                        pcsdr_in[i].i = ((float)pout[2*i]-127.0)/128.0;
+                        pcsdr_in[i].q = ((float)pout[2*i+1]-127.0)/128.0;
                     }
-                    pout += 2*fsk_nin(fsk);
-                    nrawbuf -= 2*fsk_nin(fsk);
-                    fsk_demod(fsk, bitbuf, modbuf);
+                    csdr_decimate_cc((float*)pmodembuf, csdr_in, CSDR_BUFSIZE, csdr_taps, csdr_padded_taps_length, csdr_factor,
+                                     &csdr_nout, &csdr_nin);
+                    /* place resampled signal in modem input buf */
+                    pmodembuf += csdr_nout;
+                    nmodembuf += csdr_nout;
+                    assert(pmodem_buf < (modembuf + nmodembuf_max));
+                    
+                    pout += 2*csdr_nin;
+                    nrawbuf -= 2*csdr_nin;
+                    assert(nrawbuf >= 0);
+                }
+                /* copy left over rawbuf samples to start for next time */
+                memmove(rawbuf,pout,nrawbuf);
+              
+                /* when we have fsk_nin() samples run demod ----------------------------- */
+                
+                pmodembuf = modembuf;
+                while(nmodembuf >= fsk_nin(fsk)) {
+                    prev_fsk_nin = fsk_nin(fsk);       /* fsk_nin gets updated in fsk_demod() */
+                    fsk_demod(fsk, bitbuf, pmodembuf);
+                    pmodembuf += 2*prev_fsk_nin;
+                    nmodembuf -= 2*prev_fsk_nin;
+                    assert(nmodembuf >= 0);
+                    
+                    /* output demodulated bits */
                     if (fwrite(bitbuf, 1, fsk->Nbits, (FILE*)ctx) != (unsigned int)fsk->Nbits) {
 			fprintf(stderr, "Short write, bits lost, exiting!\n");
 			rtlsdr_cancel_async(dev);
                     }
                     if((FILE*)ctx == stdout) fflush((FILE*)ctx);
-
+                    
                     if (dashboard) {
                         /* update buffer of timing samples */
                         if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
@@ -250,8 +332,8 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                     }
                 }
 
-                /* copy left over to start of buffer */
-                memmove(rawbuf,pout,nrawbuf);
+                /* copy left over modem saples to start of buffer */
+                memmove(modembuf,pmodembuf,nmodembuf*sizeof(COMP));
                 
 		if (bytes_to_read > 0)
 			bytes_to_read -= len;
@@ -346,12 +428,17 @@ int main(int argc, char **argv)
 		out_block_size = DEFAULT_BUF_LENGTH;
 	}
 
-	buffer = malloc(out_block_size * sizeof(uint8_t));
+	buffer = malloc(out_block_size * sizeof(uint8_t)); assert(buffer != NULL);
         nrawbuf_max = 2 * out_block_size;
-	rawbuf = malloc(nrawbuf_max * sizeof(uint8_t));
+	rawbuf = malloc(nrawbuf_max * sizeof(uint8_t)); assert(rawbuf != NULL);
         nrawbuf = 0;
 
-        /* create UDP socket for debug/status information */
+        assert((samp_rate % DEFAULT_MODEM_SAMPLE_RATE) == 0);
+        nmodembuf_max = nrawbuf_max*samp_rate/DEFAULT_MODEM_SAMPLE_RATE;
+        modembuf = (COMP*)malloc(nmodembuf_max * sizeof(COMP)); assert(modembuf != NULL);
+
+        /* create UDP socket for dashboard debug/status information ----------------------------- */
+
         if (dashboard) {
             struct hostent *server;
             
@@ -432,11 +519,28 @@ int main(int argc, char **argv)
 			goto out;
 		}
 	}
+
+        /* Setup the CSDR Decimator  -------------------------------------------------*/
+        {
+            // design decimating filter
+            float transition_bw = 0.05;
+            window_t window = WINDOW_DEFAULT;
+
+            csdr_factor = samp_rate/DEFAULT_MODEM_SAMPLE_RATE;
+            csdr_taps = csdr_init_decimate_cc(csdr_factor, transition_bw, window, &csdr_padded_taps_length);
+            assert(CSDR_BUFSIZE > padded_taps_length);
+
+            // first call to work out how many input samples needed (csdr_nin)
+            csdr_decimate_cc(csdr_out, csdr_in, CSDR_BUFSIZE, csdr_taps, csdr_padded_taps_length, csdr_factor, &csdr_nout, &csdr_nin);
+        }
+        
+        /* Setup the FSK demod -------------------------------------------------*/
         
         {
-            int P  = samp_rate/Rs;
-            fsk = fsk_create_hbr(samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
-            fprintf(stderr,"FSK Demod Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", (float)Rs/1000, M, P, fsk->Ndft);
+            int P = DEFAULT_MODEM_SAMPLE_RATE/Rs;
+            fsk = fsk_create_hbr(DEFAULT_MODEM_SAMPLE_RATE,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
+            fprintf(stderr,"FSK Demod Fs: %d Rs: %3.1f kHz M: %d P: %d Ndft: %d\n", DEFAULT_MODEM_SAMPLE_RATE,
+                    (float)Rs/1000, M, P, fsk->Ndft);
         }
         {
             /* set minimum "channel" for freq est */
@@ -447,6 +551,7 @@ int main(int argc, char **argv)
             fprintf(stderr,"Setting estimator limits to %d to %d Hz.\n", fsk_lower, fsk_upper);
             fsk_set_freq_est_limits(fsk,fsk_lower,fsk_upper);
         }
+
         /* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dev);
 
@@ -495,6 +600,7 @@ int main(int argc, char **argv)
         fsk_destroy(fsk);
 	free (buffer);
 	free (rawbuf);
+        free(modembuf);
 out:
 	return r >= 0 ? r : -r;
 }
