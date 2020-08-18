@@ -76,6 +76,7 @@ endif()
 if(NOT THREADS_FOUND)
     message(FATAL_ERROR "pthreads(-win32) required to compile rtl-sdr")
 endif()
+
 # Find codec2
 if(CODEC2_BUILD_DIR)
     find_package(codec2 REQUIRED
@@ -89,6 +90,15 @@ if(CODEC2_BUILD_DIR)
 else()
     find_package(codec2 REQUIRED)
 endif()
+
+# Find csdr
+if(CSDR_BUILD_DIR)
+    message(STATUS "setting up CSDR... ${CSDR_BUILD_DIR}")
+  else()
+    message(FATAL_ERROR "CSDR_BUILD_DIR not set")
+endif()
+set(CSDR_LIBRARY ${CSDR_BUILD_DIR}/libcsdr.so)
+
 ########################################################################
 # Setup the include and linker paths
 ########################################################################
@@ -96,10 +106,11 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${LIBUSB_INCLUDE_DIR}
     ${THREADS_PTHREADS_INCLUDE_DIR}
+    ${CSDR_BUILD_DIR}/include
 )
 
 #link_directories(
-#    ...
+#    
 #)
 
 # Set component parameters

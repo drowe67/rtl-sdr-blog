@@ -99,6 +99,7 @@ set(INSTALL_TARGETS rtlsdr_shared rtlsdr_static rtl_sdr rtl_tcp rtl_test rtl_fm 
 target_link_libraries(rtl_fsk codec2 rtlsdr_shared convenience_static
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
+    ${CSDR_LIBRARY}
 )
 
 target_link_libraries(rtl_sdr rtlsdr_shared convenience_static
