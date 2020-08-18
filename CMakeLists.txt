@@ -98,6 +98,7 @@ if(CSDR_BUILD_DIR)
     message(FATAL_ERROR "CSDR_BUILD_DIR not set")
 endif()
 set(CSDR_LIBRARY ${CSDR_BUILD_DIR}/libcsdr.so)
+ADD_DEFINITIONS(-DUSE_FFTW)
 
 ########################################################################
 # Setup the include and linker paths
@@ -106,7 +107,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${LIBUSB_INCLUDE_DIR}
     ${THREADS_PTHREADS_INCLUDE_DIR}
-    ${CSDR_BUILD_DIR}/include
+    ${CSDR_BUILD_DIR}
 )
 
 #link_directories(

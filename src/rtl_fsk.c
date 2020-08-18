@@ -45,6 +45,7 @@
 #include "rtl-sdr.h"
 #include "convenience/convenience.h"
 #include "fsk.h"
+#include "libcsdr.h"
 
 #define DEFAULT_SAMPLE_RATE		240000
 #define DEFAULT_BUF_LENGTH		(16 * 16384)

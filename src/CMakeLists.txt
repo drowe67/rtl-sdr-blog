@@ -100,6 +100,7 @@ target_link_libraries(rtl_fsk codec2 rtlsdr_shared convenience_static
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
     ${CSDR_LIBRARY}
+    fftw3
 )
 
 target_link_libraries(rtl_sdr rtlsdr_shared convenience_static
