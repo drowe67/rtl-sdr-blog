@@ -85,6 +85,7 @@ static float norm_rx_timing_log[NORM_RX_TIMING_LOG_SZ];
 static uint32_t norm_rx_timing_log_index = 0;
 static int fsk_lower = 0;
 static int fsk_upper = 0;
+static int output_bits;
 
 static int csdr_factor;
 static float csdr_in[CSDR_BUFSIZE*2];
@@ -114,6 +115,7 @@ void usage(void)
 		"\t[-r FSK modem symbol rate (default: %d Hz)]\n"
 		"\t[-m number of FSK modem tones (default: %d)]\n"
 		"\t[-u hostname (optional hostname:8001 where we send UDP dashboard diagnostics)\n"
+                "\t[-x output complex float samples (default output demodulated oneCharPerBit)]\n"
 		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE, DEFAULT_SYMBOL_RATE, DEFAULT_M);
 	exit(1);
 }
@@ -139,17 +141,9 @@ static void sighandler(int signum)
 }
 #endif
 
-static void udp_sendbuf(char buf[]) {
-    int n;
 
-    /* send the message to the server */
-    n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
-    if (n < 0)  {
-        fprintf(stderr, "ERROR in sendto\n");
-        exit(1);
-    }
-}
-                                
+/* CSDR decimation helper functions -------------------------------------------------*/
+
 static void csdr_decimate_cc(float *out, float *in, int the_bufsize, float *taps, int taps_length, int factor, int *nout, int *next_nin) {
     int output_size, input_skip;
     
@@ -189,6 +183,104 @@ static float *csdr_init_decimate_cc(int factor, float transition_bw, window_t wi
     firdes_lowpass_f(taps,taps_length, 0.5/(float)factor,window);
     return taps;
 }
+
+
+/* dashboard functions ------------------------------------------*/
+
+static void udp_sendbuf(char buf[]) {
+    int n;
+
+    /* send the message to the server */
+    n = sendto(sockfd, buf, strlen(buf), 0, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
+    if (n < 0)  {
+        fprintf(stderr, "ERROR in sendto\n");
+        exit(1);
+    }
+}
+                                
+void update_dashboard(struct FSK *fsk) {
+    unsigned int i;
+    
+    /* update buffer of timing samples */
+    if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
+        norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
+    else
+        fprintf(stderr, "norm_rx_timing_log full!");
+    sample_counter += fsk_nin(fsk);
+
+    if (sample_counter > modem_samp_rate) {
+        /* one second has passed, lets send some dashboard information */
+        char   buf[BUF_SZ];
+        char   buf1[BUF_SZ];
+        size_t Ndft;
+        float *f_est, sum;
+        int    m, step, start, k;
+        float  SfdB[NDFT];
+                            
+        sample_counter -= modem_samp_rate;
+        buf[0]=0;
+
+        /* Current magnitude spectrum Sf[] from freq estimator */
+
+        /* Limit spectrum to NDFT points */
+        if (fsk->Ndft > NDFT) {
+            step = fsk->Ndft/NDFT;
+            Ndft = NDFT;
+        } else {
+            step = 1;
+            Ndft = fsk->Ndft;
+        }                                  
+                                
+        for(i=0, start=0; i<Ndft; i++, start+=step) {
+            /* Sf[] array is linear magnitudes */
+            sum = 0.0;
+            for(k=0; k<step; k++)
+                sum += fsk->Sf[start+k];
+            SfdB[i] = 20.0*log10(sum+1E-6);
+        }
+                                    
+        snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
+        snprintf(buf1, BUF_SZ, "\"SfdB\":["); strncat(buf, buf1, BUF_SZ);
+        for(i=0; i<Ndft; i++) {
+            snprintf(buf1, BUF_SZ, "%f",SfdB[i]); strncat(buf, buf1, BUF_SZ);
+            if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+        }
+        snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);                           
+                            
+        /* FSK tone freq estimates */
+
+        snprintf(buf1, BUF_SZ, ", \"fsk_lower_Hz\":%d, \"fsk_upper_Hz\":%d",
+                 fsk_lower, fsk_upper); strncat(buf, buf1, BUF_SZ);
+        if (fsk->freq_est_type)
+            f_est = fsk->f2_est;
+        else
+            f_est = fsk->f_est;
+        snprintf(buf1, BUF_SZ, ", \"f_est_Hz\":["); strncat(buf, buf1, BUF_SZ);
+        for(m=0; m<fsk->mode; m++) {
+            snprintf(buf1, BUF_SZ, "%f", f_est[m]); strncat(buf, buf1, BUF_SZ);
+            if (m < (fsk->mode-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+        }
+        snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+
+        snprintf(buf1, BUF_SZ, ", \"norm_rx_timing\":["); strncat(buf, buf1, BUF_SZ);
+        for(i=0; i<norm_rx_timing_log_index; i++) {
+            snprintf(buf1, BUF_SZ, "%f", norm_rx_timing_log[i]); strncat(buf, buf1, BUF_SZ);
+            if (i < (norm_rx_timing_log_index-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
+        }
+        snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
+        norm_rx_timing_log_index = 0;
+                            
+        snprintf(buf1, BUF_SZ, ", \"SNRest_lin\":%f, \"Fs_Hz\":%d",
+                 fsk->SNRest, fsk->Fs); strncat(buf, buf1, BUF_SZ);
+                            
+        /* finish up JSON and send to dashboard GUI over UDP */
+        snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
+        udp_sendbuf(buf);
+        fprintf(stderr, ".");
+    }
+}
+
+/* rtl_sdr functions ------------------------------------------*/
 
 static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
@@ -231,7 +323,6 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                     }
                     csdr_decimate_cc((float*)pmodembuf, csdr_in, CSDR_BUFSIZE, csdr_taps, csdr_padded_taps_length, csdr_factor,
                                      &csdr_nout, &csdr_nin);
-                    fwrite((float*)pmodembuf, sizeof(complexf), csdr_nout, (FILE*)ctx); 
                     /* place resampled signal in modem input buf */
                     pmodembuf += csdr_nout;
                     nmodembuf += csdr_nout;
@@ -247,104 +338,25 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
                 /* when we have fsk_nin() samples run demod ----------------------------- */
                 
                 pmodembuf = modembuf;
-                //fprintf(stderr, "start demod loop -----\n");
                 while(nmodembuf >= fsk_nin(fsk)) {
-                    // fprintf(stderr, "  nmodembuf: %ld fsk_nin: %d\n", nmodembuf, fsk_nin(fsk));
                     prev_fsk_nin = fsk_nin(fsk);       /* fsk_nin gets updated in fsk_demod() */
-                    fsk_demod(fsk, bitbuf, pmodembuf);
+                    if (output_bits == 0)
+                        fwrite((float*)pmodembuf, sizeof(complexf), prev_fsk_nin, (FILE*)ctx); 
+                    else
+                        fsk_demod(fsk, bitbuf, pmodembuf);
                     pmodembuf += prev_fsk_nin;
                     nmodembuf -= prev_fsk_nin;
                     assert(nmodembuf >= 0);
 
-                    #ifdef TMPOUT
                     /* output demodulated bits */
-                    if (fwrite(bitbuf, 1, fsk->Nbits, (FILE*)ctx) != (unsigned int)fsk->Nbits) {
-			fprintf(stderr, "Short write, bits lost, exiting!\n");
-			rtlsdr_cancel_async(dev);
-                    }
+                    if (output_bits)
+                        fwrite(bitbuf, 1, fsk->Nbits, (FILE*)ctx);
                     if((FILE*)ctx == stdout) fflush((FILE*)ctx);
-                    #endif
                     
                     if (dashboard) {
-                        /* update buffer of timing samples */
-                        if (norm_rx_timing_log_index < NORM_RX_TIMING_LOG_SZ)
-                            norm_rx_timing_log[norm_rx_timing_log_index++] = fsk->norm_rx_timing;
-                        else
-                            fprintf(stderr, "norm_rx_timing_log full!");
-                        sample_counter += fsk_nin(fsk);
-                        if (sample_counter > modem_samp_rate) {
-                            /* one second has passed, lets send some dashboard information */
-                            char   buf[BUF_SZ];
-                            char   buf1[BUF_SZ];
-                            size_t Ndft;
-                            float *f_est, sum;
-                            int    m, step, start, k;
-                            float  SfdB[NDFT];
-                            
-                            sample_counter -= modem_samp_rate;
-                            buf[0]=0;
-
-                            /* Current magnitude spectrum Sf[] from freq estimator */
-
-                            /* Limit spectrum to NDFT points */
-                            if (fsk->Ndft > NDFT) {
-                                step = fsk->Ndft/NDFT;
-                                Ndft = NDFT;
-                            } else {
-                                step = 1;
-                                Ndft = fsk->Ndft;
-                            }                                  
-                                
-                            for(i=0, start=0; i<Ndft; i++, start+=step) {
-                                /* Sf[] array is linear magnitudes */
-                                sum = 0.0;
-                                for(k=0; k<step; k++)
-                                    sum += fsk->Sf[start+k];
-                                SfdB[i] = 20.0*log10(sum+1E-6);
-                            }
-                                    
-                            snprintf(buf1, BUF_SZ, "{"); strncat(buf, buf1, BUF_SZ);
-                            snprintf(buf1, BUF_SZ, "\"SfdB\":["); strncat(buf, buf1, BUF_SZ);
-                            for(i=0; i<Ndft; i++) {
-                                snprintf(buf1, BUF_SZ, "%f",SfdB[i]); strncat(buf, buf1, BUF_SZ);
-                                if(i<Ndft-1) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
-                             }
-                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);                           
-                            
-                            /* FSK tone freq estimates */
-
-                            snprintf(buf1, BUF_SZ, ", \"fsk_lower_Hz\":%d, \"fsk_upper_Hz\":%d",
-                                     fsk_lower, fsk_upper); strncat(buf, buf1, BUF_SZ);
-                            if (fsk->freq_est_type)
-                                f_est = fsk->f2_est;
-                            else
-                                f_est = fsk->f_est;
-                            snprintf(buf1, BUF_SZ, ", \"f_est_Hz\":["); strncat(buf, buf1, BUF_SZ);
-                            for(m=0; m<fsk->mode; m++) {
-                                snprintf(buf1, BUF_SZ, "%f", f_est[m]); strncat(buf, buf1, BUF_SZ);
-                                if (m < (fsk->mode-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
-                            }
-                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
-
-                            snprintf(buf1, BUF_SZ, ", \"norm_rx_timing\":["); strncat(buf, buf1, BUF_SZ);
-                            for(i=0; i<norm_rx_timing_log_index; i++) {
-                                snprintf(buf1, BUF_SZ, "%f", norm_rx_timing_log[i]); strncat(buf, buf1, BUF_SZ);
-                                if (i < (norm_rx_timing_log_index-1)) { snprintf(buf1, BUF_SZ, ", "); strncat(buf, buf1, BUF_SZ); }
-                            }
-                            snprintf(buf1, BUF_SZ, "]"); strncat(buf, buf1, BUF_SZ);
-                            norm_rx_timing_log_index = 0;
-                            
-                            snprintf(buf1, BUF_SZ, ", \"SNRest_lin\":%f, \"Fs_Hz\":%d",
-                                     fsk->SNRest, fsk->Fs); strncat(buf, buf1, BUF_SZ);
-                            
-                            /* finish up JSON and send to dashboard GUI over UDP */
-                            snprintf(buf1, BUF_SZ, "}\n"); strncat(buf, buf1, BUF_SZ); 
-                            udp_sendbuf(buf);
-                            fprintf(stderr, ".");
-                        }
+                        update_dashboard(fsk);
                     }
                 }
-
                 /* copy left over modem saples to start of buffer */
                 memmove(modembuf, pmodembuf, nmodembuf*sizeof(COMP));
                 
@@ -373,8 +385,9 @@ int main(int argc, char **argv)
         int Rs = DEFAULT_SYMBOL_RATE;
         int M = DEFAULT_M;
         int channel_width = DEFAULT_CHANNEL_WIDTH;
+        output_bits = 1;
         
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:c:M:R:")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:c:M:R:x")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -417,6 +430,9 @@ int main(int argc, char **argv)
 			break;
                 case 'c':
                         channel_width = atoi(optarg);
+                        break;
+                case 'x':
+                        output_bits = 0;
                         break;
 		default:
 			usage();
