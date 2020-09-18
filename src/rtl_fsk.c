@@ -116,6 +116,7 @@ void usage(void)
 		"\t[-m number of FSK modem tones (default: %d)]\n"
 		"\t[-u hostname (optional hostname:8001 where we send UDP dashboard diagnostics)\n"
                 "\t[-x output complex float samples (default output demodulated oneCharPerBit)]\n"
+                "\t[-t toneSpacing use 'mask' freq est]\n"
 		"\tfilename (a '-' dumps bits to stdout)\n\n", DEFAULT_SAMPLE_RATE, DEFAULT_SYMBOL_RATE, DEFAULT_M);
 	exit(1);
 }
@@ -385,9 +386,11 @@ int main(int argc, char **argv)
         int Rs = DEFAULT_SYMBOL_RATE;
         int M = DEFAULT_M;
         int channel_width = DEFAULT_CHANNEL_WIDTH;
+        int tone_spacing = 100;
+        int freq_est_mask = 0;
         output_bits = 1;
         
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:c:M:R:x")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:S:u:r:m:c:M:R:xt:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -433,6 +436,10 @@ int main(int argc, char **argv)
                         break;
                 case 'x':
                         output_bits = 0;
+                        break;
+                case 't':
+                        freq_est_mask = 1;
+                        tone_spacing = atoi(optarg);
                         break;
 		default:
 			usage();
@@ -567,10 +574,11 @@ int main(int argc, char **argv)
         
         {
             int P = modem_samp_rate/Rs;
-            fsk = fsk_create_hbr(modem_samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,100);
-            fprintf(stderr,"FSK Demod Fs: %5.1f kHz Rs: %3.1f kHz M: %d P: %d Ndft: %d\n",
+            fsk = fsk_create_hbr(modem_samp_rate,Rs,M,P,FSK_DEFAULT_NSYM,FSK_NONE,tone_spacing);
+            fsk_set_freq_est_alg(fsk, freq_est_mask);
+            fprintf(stderr,"FSK Demod Fs: %5.1f kHz Rs: %3.1f kHz M: %d P: %d Ndft: %d fest_mask: %d\n",
                     (float)modem_samp_rate/1000,
-                    (float)Rs/1000, M, P, fsk->Ndft);
+                    (float)Rs/1000, M, P, fsk->Ndft, freq_est_mask);
         }
         {
             /* set minimum "channel" for freq est */
